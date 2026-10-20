@@ -1,0 +1,21 @@
+[build-system]
+requires = ['setuptools>=80']
+build-backend = 'setuptools.build_meta'
+
+[project]
+name = 'uk-bank-holidays-mcp'
+version = '0.1.0'
+description = 'MCP server for UK bank holidays and working days, using GOV.UK data'
+authors = [{ name = 'Wyatt Hui' }]
+requires-python = '>=3.14'
+dependencies = [
+    'mcp[cli]>=2.3,<3',
+    'httpx2>=2.15,<3',
+    'tzdata',
+]
+
+[project.optional-dependencies]
+dev = ['pytest>=9.1']
+
+[tool.pytest.ini_options]
+testpaths = ['tests']
