@@ -23,18 +23,25 @@ The GOV.UK JSON has three divisions: `england-and-wales`, `scotland`, `northern-
 
 ```
 pyproject.toml
+.flake8           # flake8 settings: max line length 99
+.tool-versions    # Python version for asdf
+CONTEXT.md        # the design decisions and the reasons for them
+LICENSE           # MIT
+README.md
 src/uk_bank_holidays_mcp/
     __init__.py
     holidays.py   # pure logic: no network, no MCP, easy to test
     data.py       # fetch the GOV.UK JSON with httpx2, cached in memory for 24 hours
     server.py     # MCPServer: thin tool wrappers around holidays.py
+    validators.py # strict YYYY-MM-DD parsing for date arguments (decision 15)
 tests/
     fixtures/bank-holidays.json   # small saved sample, so tests never use the network
     test_holidays.py
+    test_data.py                  # cache, retries and bad GOV.UK responses, with a fake clock
+    test_validators.py            # which date texts are accepted (decision 15)
     test_server.py                # smoke test: start the server over stdio, list and call the tools
 .claude/agents/
     mcp-tool-reviewer.md
-README.md
 ```
 
 ## Tools (first version)
@@ -52,9 +59,10 @@ Rules:
 - Validate inputs. An unknown division gives a clear error listing the valid ones; a bad date or `start` after `end` gives a clear error.
 - A date, year or range outside the covered years (years that have data in the GOV.UK file) is an error, never "not a bank holiday". So is a `next_bank_holiday` with no next holiday in the data. The error says which years are covered.
 - Errors are raised as `ToolError`, so `MCPServer` sends them as tool errors (`isError`). Not `MCPError`: in 2.x that becomes a protocol-level failure.
+- An unknown argument name is an error, not ignored: the `_reject_unknown_arguments` middleware in `server.py` checks every tool call (decision 16).
 - Tool descriptions must say what the tool does and what each argument means, because AI agents read them. Put them in `@mcp.tool(description=...)` and `Annotated[..., Field(description=...)]`, not in docstrings.
 - All tools are read-only.
-- Cache the GOV.UK response in memory for 24 hours; don't call GOV.UK on every tool call. If a refresh fails, keep using the old data; with no data at all, return an error. GOV.UK calls time out after 5 seconds, and after a failure, wait 1 hour before retrying.
+- Cache the GOV.UK response in memory for 24 hours; don't call GOV.UK on every tool call. If a refresh fails, keep using the old data; with no data at all, return an error. GOV.UK calls use a 5-second timeout for each step (connecting, and each read; not the whole download), do not follow redirects (decision 14), and after a failure, wait 1 hour before retrying.
 - Tests must never use the network.
 
 ## Subagent
@@ -69,6 +77,7 @@ Rules:
 
 - Set up: `$(asdf which python) -m venv .venv && . .venv/bin/activate && pip install -e ".[dev]"`. Use `asdf which python`, not plain `python`: the VS Code terminal may already have a work virtualenv active, and its `python` would win. After a Python version change, `rm -rf .venv` and run this again.
 - Test: `pytest`
+- Lint: `flake8` (max line length 99, set in `.flake8`)
 - Run the server: `python -m uk_bank_holidays_mcp.server`
 - Try it in Claude Code: `claude mcp add uk-bank-holidays -- /full/path/to/.venv/bin/python -m uk_bank_holidays_mcp.server`
 
@@ -91,5 +100,5 @@ This is a personal project. Never use the work identity or work GitHub account.
 
 ## Working agreement
 
-- Small steps; run `pytest` after each one.
+- Small steps; run `pytest` and `flake8` after each one.
 - Don't commit or push unless Wyatt asks. He reviews the diff first.

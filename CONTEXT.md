@@ -24,13 +24,19 @@ Shared language and decisions for the UK Bank Holidays MCP server. Built during 
 
 ### 3. If GOV.UK fails, keep using the old data (2026-10-20)
 
-When the 24-hour cache expires and the refresh fails (GOV.UK error, timeout, no network), the server keeps answering from the data it already has. If there is no data at all (the first call after start-up, with GOV.UK down), the tool returns an error saying GOV.UK could not be reached.
+When the 24-hour cache expires and the refresh fails for any reason (GOV.UK error, timeout, no network, a response that is not bank holiday data in the expected shape, or a broken local proxy or certificate setting), the server keeps answering from the data it already has. `data.py` catches every exception at this one point, because the list of specific types kept missing real cases (added 2026-10-23). New data is checked before it replaces the old. If there is no data at all (the first call after start-up, with GOV.UK down), the tool returns an error saying the data could not be got from GOV.UK.
 
 **Why:** bank holidays rarely change, so day-old data is almost always right, and an error would be wrong far more often. If GOV.UK did change a holiday, a working cache could be up to 24 hours behind anyway. With no data at all, there is nothing honest to answer from. The cache lives in memory, so old data never outlives the server process.
 
 ### 4. GOV.UK calls time out after 5 seconds; after a failure, wait 1 hour before retrying (2026-10-20)
 
 **Why:** without this, while GOV.UK is down every tool call would wait for the timeout before falling back to the old data (decision 3).
+
+The 5 seconds is httpx's timeout, which limits each step (connecting, and each read of the response), not the whole download. GOV.UK's file is small and served from a CDN, so a limit on the whole request is not worth the extra code (added 2026-10-23).
+
+The 1-hour wait applies only when there is old data to fall back on. With no data at all, every call tries GOV.UK again (added 2026-10-22), because a network blip at start-up must not leave the server returning errors for an hour.
+
+There is no lock around the refresh. In mcp 2.x two tool calls can run at once, so both may download GOV.UK when the cache expires. That is harmless, and not worth the extra code.
 
 ### 5. "Next" includes `from_date` itself (2026-10-20)
 
@@ -58,7 +64,7 @@ Every tool that takes `division` requires it. This replaces the `england-and-wal
 
 ### 9. No next holiday inside the data is an error (2026-10-20)
 
-`next_bank_holiday(from_date='2028-12-27')` returns an error saying the data ends in 2028, even though 2028 is a covered year.
+`next_bank_holiday(from_date='2028-12-27')` returns an error saying which years the data covers (it ends in 2028), even though 2028 is a covered year.
 
 **Why:** the next holiday would be in 2029, which has no data. Same rule as decision 1: "unknown" must not look like an answer.
 
@@ -83,3 +89,21 @@ A tool raises `ToolError` with a clear message; `MCPServer` returns it as a tool
 `mcp[cli]>=2.3,<3`, with `MCPServer` from `mcp.server.mcpserver`. GOV.UK is fetched with `httpx2`, the HTTP client mcp 2.x already uses.
 
 **Why:** a new project should start on the current API, not the outgoing 1.x line. `@mcp.tool(...)` takes the same arguments as 1.x, so decision 11 still works. Using `httpx2` (same API as `httpx`) avoids a second HTTP library. In 2.x, normal `def` tools run in a worker thread, so a slow GOV.UK call does not freeze the server. Downside: most tutorials still show 1.x `FastMCP`.
+
+### 14. Redirects from GOV.UK are not followed (2026-10-23)
+
+`data.py` does not follow redirects. A redirect counts as a failed fetch, so decision 3 keeps the old data.
+
+**Why:** GOV.UK has served this URL for years and does not redirect it. Following redirects safely would mean checking every hop for HTTPS before its request is sent, and redirects multiply the 5-second timeout: review rounds on 23 Oct found each of these problems. If GOV.UK ever moves the file, the server keeps its old data, and `GOV_UK_URL` in `data.py` is a one-line change. (Redirects were briefly followed on 23 Oct, then this was reverted.)
+
+### 15. Date arguments must be real dates written exactly as YYYY-MM-DD (2026-10-23)
+
+`validators.py` parses every date argument itself: it must be text, a real date, and read back exactly as written. Numbers, Unix timestamps (as numbers or text), date-times and impossible dates such as `2027-02-30` all get the same clear error.
+
+**Why:** pydantic's default date parsing is loose. It read `1798761600` as 1 January 2027 and `2026-12-25T00:00:00Z` as 25 December, so the tools gave confident answers for dates nobody wrote: the problem decision 1 exists to prevent. `data.py` checks GOV.UK's own dates with the same function.
+
+### 16. An unknown argument name is an error (2026-10-23)
+
+The server rejects a tool call that uses an argument name the tool does not have, and the error lists the names it does take. One middleware function in `server.py` does this for every tool, using each tool's own schema, so new tools and arguments are covered automatically.
+
+**Why:** the mcp 2.x SDK silently drops unknown names, so a typo fell back to the default. `next_bank_holiday` with `date` instead of `from_date` answered for today, and `years: 2030` listed this year instead of saying there is no data: the confident wrong answer decision 1 exists to prevent. mcp 2.x marks its middleware API as provisional; if an update changes it, `test_server.py` fails loudly.
